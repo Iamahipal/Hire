@@ -154,6 +154,7 @@ def cmd_demo(args):
 
     # Run cluster and generate
     cmd_cluster(args)
+    args.city = None  # Generate for all cities
     cmd_generate(args)
 
     print("\n" + "=" * 60)

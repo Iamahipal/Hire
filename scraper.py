@@ -20,18 +20,28 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import (
-    TimeoutException,
-    NoSuchElementException,
-    StaleElementReferenceException,
-    WebDriverException
-)
+# Selenium imports - optional for demo mode
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import (
+        TimeoutException,
+        NoSuchElementException,
+        StaleElementReferenceException,
+        WebDriverException
+    )
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    SELENIUM_AVAILABLE = False
+    # Create placeholder exceptions for type hints
+    TimeoutException = Exception
+    NoSuchElementException = Exception
+    StaleElementReferenceException = Exception
+    WebDriverException = Exception
 
 from config import SCRAPER_CONFIG, DATA_DIR, LOGS_DIR
 
@@ -103,7 +113,7 @@ class JobScraper:
         """Return a random user agent for rotation."""
         return random.choice(self.config["user_agents"])
 
-    def _setup_driver(self) -> webdriver.Chrome:
+    def _setup_driver(self):
         """Setup headless Chrome with stealth settings."""
         options = Options()
 
@@ -408,6 +418,11 @@ class JobScraper:
         Returns:
             List of new JobListing objects
         """
+        if not SELENIUM_AVAILABLE:
+            logger.error("Selenium is not installed. Install with: pip install selenium")
+            logger.info("Tip: Use 'scrape_from_csv()' or run 'demo' mode instead")
+            return []
+
         target_url = url or self.config["target_url"]
         all_jobs = []
         max_retries = self.config["max_retries"]
