@@ -226,26 +226,45 @@ def parse_card_element(card):
         "deep_link": "",
     }
 
+    # --- Step 1: Try extracting dept & location from HTML child elements ---
+    try:
+        # PeopleStrong cards often have dept/location in colored spans/divs
+        all_spans = card.find_elements(By.CSS_SELECTOR, "span, div, p, a")
+        for elem in all_spans:
+            elem_text = elem.text.strip()
+            # Check for pipe-separated dept|location in element text
+            if '|' in elem_text and 'Posted' not in elem_text and 'End' not in elem_text and 'SHOWING' not in elem_text:
+                parts = elem_text.split('|')
+                if len(parts) >= 2 and len(parts[0].strip()) > 1:
+                    job["department"] = parts[0].strip()
+                    job["location"] = parts[1].strip()
+                    break
+    except Exception:
+        pass
+
+    # --- Step 2: Parse lines for all other fields ---
+    jr_code_index = -1
+
     for i, line in enumerate(lines):
         # JR Code line (e.g., "JR00201544")
         jr_match = re.match(r'^(JR\d+)$', line)
         if jr_match:
             job["jr_code"] = jr_match.group(1)
-            # Title is usually the line BEFORE JR code
+            jr_code_index = i
+            # Title is the line BEFORE JR code
             if i > 0:
                 job["title"] = lines[i - 1]
             continue
 
-        # Department | Location line (e.g., "Risk | Pune Corporate Office - Fou...")
-        # or "BFS Direct | Madurai"
-        if '|' in line and 'Posted' not in line and 'End' not in line:
+        # Department | Location with actual pipe character
+        if '|' in line and 'Posted' not in line and 'End' not in line and 'SHOWING' not in line:
             parts = line.split('|')
-            if len(parts) >= 2:
+            if len(parts) >= 2 and len(parts[0].strip()) > 1:
                 job["department"] = parts[0].strip()
                 job["location"] = parts[1].strip()
             continue
 
-        # Posted On / End Date (e.g., "Posted On: 30 Jan 2026 | End Date: 30 Jan 2027")
+        # Posted On / End Date
         if 'Posted' in line:
             posted_match = re.search(r'Posted\s*On:\s*(.+?)(?:\||$)', line)
             if posted_match:
@@ -261,33 +280,61 @@ def parse_card_element(card):
             job["experience"] = exp_match.group(1)
             continue
 
-        # Also try "Required Experience" followed by value
         if 'Required Experience' in line:
-            continue  # The actual value is on the next line
+            continue
 
         # Skills
         if 'SKILLS' in line.upper():
             job["skills"] = line
             continue
 
-    # Try to get the Apply link
+    # --- Step 3: If dept/location still empty, use POSITIONAL logic ---
+    # Card text order: Title, JR Code, [Dept], [Location], Posted..., Experience...
+    # The line(s) right after JR code (before "Posted") are dept/location
+    if not job["department"] and not job["location"] and jr_code_index >= 0:
+        # Collect lines between JR code and "Posted On" / "Required"
+        dept_loc_lines = []
+        for j in range(jr_code_index + 1, min(jr_code_index + 4, len(lines))):
+            line = lines[j]
+            # Stop if we hit dates, experience, skills, or buttons
+            if any(kw in line for kw in ['Posted', 'Required', 'SKILLS', 'Share', 'Apply', 'years']):
+                break
+            if re.match(r'^\d+[\s-]+\d*\s*years?$', line, re.I):
+                break
+            dept_loc_lines.append(line)
+
+        if len(dept_loc_lines) == 1:
+            # Single line: might be "Dept | Location" or "Dept - Location"
+            line = dept_loc_lines[0]
+            if '|' in line:
+                parts = line.split('|')
+                job["department"] = parts[0].strip()
+                job["location"] = parts[1].strip() if len(parts) > 1 else ""
+            elif ' - ' in line:
+                parts = line.split(' - ', 1)
+                job["department"] = parts[0].strip()
+                job["location"] = parts[1].strip() if len(parts) > 1 else ""
+            else:
+                # Could be just department or just location
+                job["department"] = line
+        elif len(dept_loc_lines) == 2:
+            # Two separate lines: first = dept, second = location
+            job["department"] = dept_loc_lines[0]
+            job["location"] = dept_loc_lines[1]
+        elif len(dept_loc_lines) >= 3:
+            # Multiple lines: first = dept, rest = location
+            job["department"] = dept_loc_lines[0]
+            job["location"] = dept_loc_lines[1]
+
+    # --- Step 4: Deep link ---
     try:
         link = card.find_element(By.XPATH, ".//a[contains(text(), 'Apply') or contains(@href, '/job/')]")
         job["deep_link"] = link.get_attribute("href") or ""
     except:
         pass
 
-    # Try share link for deep link
-    if not job["deep_link"]:
-        try:
-            share_btn = card.find_element(By.XPATH, ".//button[contains(text(), 'Share')]")
-            # Sometimes clicking share reveals the URL
-        except:
-            pass
-
-    # Construct deep link from JR code if not found
     if not job["deep_link"] and job["jr_code"]:
-        job["deep_link"] = f"{BASE_URL}/job/joblist"
+        job["deep_link"] = f"{BASE_URL}/job/jobdetail/{job['jr_code']}"
 
     return job if job["jr_code"] else None
 
@@ -295,7 +342,7 @@ def parse_card_element(card):
 def extract_from_page_text(driver):
     """
     Fallback: Parse jobs from the full page text using regex patterns.
-    This handles cases where CSS selectors don't match.
+    Uses POSITIONAL logic: after JR code, next lines are dept/location.
     """
     jobs = []
 
@@ -304,17 +351,22 @@ def extract_from_page_text(driver):
     except Exception:
         return jobs
 
-    # Split text into blocks using JR code as delimiter
-    # Pattern: Title line, then JR code, then details
-    blocks = re.split(r'(?=\b[A-Z][A-Za-z\s\-/]+\n\s*JR\d{5,})', body_text)
+    lines = [l.strip() for l in body_text.split('\n') if l.strip()]
 
-    for block in blocks:
-        block = block.strip()
-        if not block:
-            continue
+    # Skip words that are NOT dept/location
+    SKIP_WORDS = [
+        'Posted', 'End Date', 'Required', 'SKILLS', 'Share', 'Apply',
+        'First', 'Last', 'SHOWING', 'Sign In', 'Register', 'OF',
+    ]
 
-        jr_match = re.search(r'(JR\d{5,})', block)
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Find JR code lines
+        jr_match = re.match(r'^(JR\d{5,})$', line)
         if not jr_match:
+            i += 1
             continue
 
         job = {
@@ -326,39 +378,87 @@ def extract_from_page_text(driver):
             "posted_date": "",
             "end_date": "",
             "skills": "",
-            "deep_link": f"{BASE_URL}/job/joblist",
+            "deep_link": f"{BASE_URL}/job/jobdetail/{jr_match.group(1)}",
         }
 
-        lines = [l.strip() for l in block.split('\n') if l.strip()]
+        # Title = line BEFORE JR code
+        if i > 0:
+            job["title"] = lines[i - 1]
 
-        for i, line in enumerate(lines):
-            # Title = line before JR code
-            if line == job["jr_code"] and i > 0:
-                job["title"] = lines[i - 1]
+        # Now scan lines AFTER JR code for dept, location, dates, experience
+        # Card order: JR Code -> Dept/Location -> Dates -> Experience -> Skills
+        dept_loc_collected = False
+        j = i + 1
 
-            # Department | Location
-            if '|' in line and 'Posted' not in line and 'End' not in line and 'SHOWING' not in line:
-                parts = line.split('|')
-                if len(parts) >= 2:
+        while j < len(lines) and j < i + 15:
+            next_line = lines[j]
+
+            # Stop if we hit the next job card (next JR code or next title+JR)
+            if re.match(r'^JR\d{5,}$', next_line):
+                break
+
+            # Department | Location (with pipe)
+            if '|' in next_line and not any(kw in next_line for kw in SKIP_WORDS):
+                parts = next_line.split('|')
+                if len(parts) >= 2 and len(parts[0].strip()) > 1:
                     job["department"] = parts[0].strip()
                     job["location"] = parts[1].strip()
+                    dept_loc_collected = True
+                    j += 1
+                    continue
 
-            # Dates
-            if 'Posted' in line:
-                posted_match = re.search(r'Posted\s*On:\s*(.+?)(?:\||$)', line)
+            # Dates line
+            if 'Posted' in next_line:
+                posted_match = re.search(r'Posted\s*On:\s*(.+?)(?:\||$)', next_line)
                 if posted_match:
                     job["posted_date"] = posted_match.group(1).strip()
-                end_match = re.search(r'End\s*Date:\s*(.+?)$', line)
+                end_match = re.search(r'End\s*Date:\s*(.+?)$', next_line)
                 if end_match:
                     job["end_date"] = end_match.group(1).strip()
+                j += 1
+                continue
 
-            # Experience
-            exp_match = re.match(r'^(\d+[\s-]+\d*\s*years?)$', line, re.I)
+            # Experience value
+            exp_match = re.match(r'^(\d+[\s-]+\d*\s*years?)$', next_line, re.I)
             if exp_match:
-                job["experience"] = line
+                job["experience"] = next_line
+                j += 1
+                continue
+
+            # Skip labels
+            if next_line in ('Required Experience', 'Required Skills'):
+                j += 1
+                continue
+
+            # Skills
+            if 'SKILLS' in next_line.upper():
+                job["skills"] = next_line
+                j += 1
+                continue
+
+            # Skip buttons/nav
+            if any(kw in next_line for kw in SKIP_WORDS):
+                j += 1
+                continue
+
+            # If we haven't collected dept/location yet, these lines are dept/location
+            # The website shows: "Risk" and "Pune Corporate Office" as separate lines
+            # OR "Lifestyle Finance" and "Mumbai - Thane" as separate lines
+            if not dept_loc_collected:
+                if not job["department"]:
+                    job["department"] = next_line
+                elif not job["location"]:
+                    job["location"] = next_line
+                    dept_loc_collected = True
+                j += 1
+                continue
+
+            j += 1
 
         if job["title"]:
             jobs.append(job)
+
+        i = j  # Skip ahead past this card
 
     return jobs
 
