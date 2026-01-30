@@ -1,0 +1,14 @@
+# Hyper-Local Job Engine - Dependencies
+# Install with: pip install -r requirements.txt
+
+# Web scraping
+selenium>=4.15.0
+
+# Image processing
+Pillow>=10.0.0
+
+# Data processing (optional, but recommended)
+pandas>=2.0.0
+
+# Chrome WebDriver management (auto-downloads correct driver)
+webdriver-manager>=4.0.0
