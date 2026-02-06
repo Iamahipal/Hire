@@ -82,6 +82,54 @@ f"//a[text()='{page_num}'] | //button[text()='{page_num}']"
 
 ---
 
+### 5. Skills Field Garbage Data
+**Problem**: Many jobs (especially MFI roles) don't have actual skill tags. The Skills section just shows "Skills as per JD" text, which gets extracted as garbage.
+
+**What shows up wrong**:
+```
+skills: "SKILL\nSKILLS AS PER JD"
+skills: "Skills as per JD"
+skills: "SKILL"
+```
+
+**Solution**: Implement AGENTIC cleaning that detects and clears garbage:
+```python
+garbage_patterns = [
+    "SKILLS AS PER JD", "Skills as per JD", "AS PER JD",
+    "SKILL\n", "Skills as per", "Minimum Qualification",
+]
+
+if any(g.upper() in skills.upper() for g in garbage_patterns):
+    job["skills"] = ""  # Empty is better than garbage
+```
+
+**Rule**: Empty data is BETTER than garbage data. If skills field contains garbage, clear it.
+
+---
+
+### 6. Encoding Issues (UTF-8 Artifacts)
+**Problem**: Website uses special characters that appear as garbage when extracted.
+
+**Common encoding artifacts**:
+| Garbage | Should Be |
+|---------|-----------|
+| â€¢ | • (bullet) |
+| â€™ | ' (apostrophe) |
+| â€" | – (dash) |
+| Ð¥ | • (bullet) |
+| ï‚§ | • (bullet) |
+
+**Solution**: Clean text fields after extraction:
+```python
+encoding_replacements = {
+    "â€¢": "•", "â€™": "'", "Ð¥": "•", "ï‚§": "•"
+}
+for bad, good in encoding_replacements.items():
+    text = text.replace(bad, good)
+```
+
+---
+
 ## WORKING EXTRACTION STRATEGIES
 
 ### Strategy A: Detail Page Click (Most Accurate, Slowest)
@@ -184,6 +232,26 @@ Different retry strategies for different failures:
 - Page not loaded → Increase wait time
 - Stale element → Re-find element fresh
 
+### 6. Agentic Data Cleaning
+Always clean extracted data BEFORE saving:
+```python
+def clean_job_data(job):
+    # Detect garbage in skills
+    if "SKILLS AS PER JD" in job["skills"].upper():
+        job["skills"] = ""  # Clear garbage
+
+    # Fix encoding artifacts
+    job["responsibilities"] = job["responsibilities"].replace("â€¢", "•")
+
+    # Extract department from title if missing
+    if not job["department"] and "MFI South" in job["title"]:
+        job["department"] = "MFI South"
+
+    return job
+```
+
+**Principle**: The scraper should be SMART enough to know what's garbage vs valid data.
+
 ---
 
 ## KNOWN ISSUES & SOLUTIONS
@@ -276,7 +344,10 @@ Extract City, State, Location Name from the LABELED fields on detail page.
 | 2026-02-06 | Added agentic scraper principles |
 | 2026-02-07 | Created v6 agentic scraper with full detail page extraction |
 | 2026-02-07 | Documented detail page structure (City, State, Location Name fields) |
+| 2026-02-07 | Added skills garbage detection lesson (SKILLS AS PER JD issue) |
+| 2026-02-07 | Added encoding artifacts fix (â€¢ → • etc.) |
+| 2026-02-07 | Added agentic data cleaning principle |
 
 ---
 
-*Last updated by Claude on 2026-02-06*
+*Last updated by Claude on 2026-02-07*
