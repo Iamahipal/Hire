@@ -210,29 +210,30 @@ def extract_detail_page_complete(driver, jr_code):
     js_extract = """
     var data = {};
 
-    // Helper to get text by label
+    // Helper to get text by label - looks for label and returns adjacent value
     function getFieldValue(labelText) {
         var allElements = document.querySelectorAll('*');
         for (var el of allElements) {
-            if (el.children.length === 0 || el.tagName === 'TD' || el.tagName === 'TH') {
-                var text = el.textContent.trim();
-                if (text.toLowerCase() === labelText.toLowerCase()) {
-                    // Found label, look for value in next sibling or parent's next child
-                    var next = el.nextElementSibling;
-                    if (next) return next.textContent.trim();
-
-                    // Try parent's next sibling
-                    var parent = el.parentElement;
-                    if (parent) {
-                        var parentNext = parent.nextElementSibling;
-                        if (parentNext) return parentNext.textContent.trim();
+            var text = el.textContent.trim();
+            // Match exact label or label with colon
+            if (text === labelText || text === labelText + ':') {
+                // Look for value in next sibling
+                var next = el.nextElementSibling;
+                if (next && next.textContent.trim().length > 0) {
+                    var val = next.textContent.trim();
+                    // Don't return if it's another label
+                    if (val !== labelText && !val.endsWith(':')) {
+                        return val;
                     }
-
-                    // Try finding in same row (table structure)
-                    var row = el.closest('tr');
-                    if (row) {
-                        var cells = row.querySelectorAll('td');
-                        if (cells.length >= 2) return cells[1].textContent.trim();
+                }
+                // Try parent's structure (common in PeopleStrong)
+                var parent = el.parentElement;
+                if (parent) {
+                    var siblings = parent.parentElement ? parent.parentElement.children : [];
+                    for (var i = 0; i < siblings.length; i++) {
+                        if (siblings[i] === parent && siblings[i+1]) {
+                            return siblings[i+1].textContent.trim();
+                        }
                     }
                 }
             }
@@ -240,15 +241,65 @@ def extract_detail_page_complete(driver, jr_code):
         return '';
     }
 
-    // Get title from h1/h2 or main heading area
-    var titleEl = document.querySelector('h1, h2, [class*="job-title"], [class*="position"]');
+    // ===== TITLE EXTRACTION =====
+    // Try multiple approaches to get the job title
+
+    // Method 1: Look for heading elements
+    var titleEl = document.querySelector('h1, h2');
     if (titleEl) {
-        data.title = titleEl.textContent.trim();
+        var titleText = titleEl.textContent.trim();
+        // Make sure it's not navigation or other header
+        if (titleText.length > 5 && titleText.length < 150 &&
+            !titleText.includes('Sign In') && !titleText.includes('Register') &&
+            !titleText.includes('All Jobs')) {
+            data.title = titleText;
+        }
+    }
+
+    // Method 2: Look for job title in page structure
+    if (!data.title) {
+        // PeopleStrong often has title near JR code
+        var jrEl = document.evaluate("//*[contains(text(), 'JR00')]", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+        if (jrEl) {
+            var parent = jrEl.parentElement;
+            for (var i = 0; i < 5 && parent; i++) {
+                var h = parent.querySelector('h1, h2, h3, h4, [class*="title"]');
+                if (h) {
+                    var t = h.textContent.trim();
+                    if (t.length > 5 && !t.includes('JR00')) {
+                        data.title = t;
+                        break;
+                    }
+                }
+                parent = parent.parentElement;
+            }
+        }
+    }
+
+    // Method 3: Get from Job Title field in BASIC SECTION
+    if (!data.title) {
+        var jobTitleField = getFieldValue('Job Title');
+        if (jobTitleField && jobTitleField.length > 5) {
+            data.title = jobTitleField.split(',')[0].trim(); // Take first part before comma
+        }
+    }
+
+    // ===== DEPARTMENT EXTRACTION =====
+    // Look for department in the header area (format: "Dept | Location")
+    var bodyText = document.body.innerText;
+    var deptMatch = bodyText.match(/^([A-Z][A-Za-z\s]+(?:South|North|East|West|MFI|GL|Rural|Urban)?)\s*\|\s*[A-Za-z]/m);
+    if (deptMatch) {
+        data.department = deptMatch[1].trim();
+    }
+
+    // Also try org unit patterns
+    var orgMatch = bodyText.match(/(?:MFI\s+(?:South|North|East|West)|GL\s+(?:North|South|East|West)\s*(?:West)?|Rural|Urban\s+Finance)/i);
+    if (orgMatch) {
+        data.org_unit = orgMatch[0].trim();
     }
 
     // BASIC SECTION fields
     data.job_level = getFieldValue('Job Level');
-    data.job_title_full = getFieldValue('Job Title');
 
     // JOB LOCATION fields
     data.country = getFieldValue('Country');
@@ -258,28 +309,52 @@ def extract_detail_page_complete(driver, jr_code):
     data.location_name = getFieldValue('Location Name');
     data.tier = getFieldValue('Tier');
 
-    // Get all skills from skill tags/badges
-    var skillTags = document.querySelectorAll('[class*="skill"], [class*="tag"], [class*="badge"], [class*="chip"]');
+    // ===== SKILLS EXTRACTION =====
+    // Look for skill tags with star icons (★)
     var skills = [];
-    for (var tag of skillTags) {
-        var skillText = tag.textContent.trim();
-        // Filter out non-skill items
-        if (skillText && skillText.length > 1 && skillText.length < 50) {
-            if (!skillText.includes('Apply') && !skillText.includes('Share') &&
-                !skillText.includes('Posted') && !skillText.includes('End Date')) {
-                skills.push(skillText);
+    var skillSection = bodyText.match(/Skills[\s\S]*?(?=Minimum Qualification|JOB DESCRIPTION)/i);
+    if (skillSection) {
+        var skillText = skillSection[0];
+        // Extract skills after ★ or • markers
+        var skillMatches = skillText.match(/[★•]\s*([A-Z][A-Z\s&]+?)(?=[★•\n]|$)/g);
+        if (skillMatches) {
+            skillMatches.forEach(function(s) {
+                var skill = s.replace(/^[★•]\s*/, '').trim();
+                if (skill.length > 1 && skill.length < 40 &&
+                    skill !== 'SKILL' && !skill.includes('Skills as per')) {
+                    skills.push(skill);
+                }
+            });
+        }
+
+        // Also try comma-separated skills
+        if (skills.length === 0) {
+            var commaSkills = skillText.match(/([A-Z][A-Z\s&]{2,30})(?:,|$)/g);
+            if (commaSkills) {
+                commaSkills.forEach(function(s) {
+                    var skill = s.replace(/,/g, '').trim();
+                    if (skill.length > 2 && skill !== 'SKILL') {
+                        skills.push(skill);
+                    }
+                });
             }
         }
     }
 
-    // Also try getting skills from a skills section
-    var skillsSection = document.body.innerText.match(/Skills[\\s\\S]*?(?=Minimum Qualification|JOB DESCRIPTION|$)/i);
-    if (skillsSection && skills.length === 0) {
-        // Parse skills from text
-        var skillLines = skillsSection[0].split('\\n').filter(s => s.trim().length > 0 && s.trim().length < 50);
-        skills = skillLines.slice(1).map(s => s.replace(/^[★•\\-]\\s*/, '').trim()).filter(s => s.length > 1);
+    // Try getting from DOM elements with skill-like classes
+    if (skills.length === 0) {
+        document.querySelectorAll('[class*="chip"], [class*="tag"], [class*="badge"], [class*="pill"]').forEach(function(el) {
+            var t = el.textContent.trim();
+            if (t.length > 1 && t.length < 40 &&
+                !t.includes('Apply') && !t.includes('Share') &&
+                !t.includes('Posted') && !t.includes('SKILL') &&
+                !t.includes('Skills as per')) {
+                skills.push(t.replace(/^[★•]\s*/, ''));
+            }
+        });
     }
-    data.skills = [...new Set(skills)].join(', ');
+
+    data.skills = [...new Set(skills)].filter(s => s.length > 1).join(', ');
 
     // Minimum Qualification
     data.min_qualification = getFieldValue('Minimum Qualification');
@@ -338,20 +413,42 @@ def extract_detail_page_complete(driver, jr_code):
 
     # ==================== FALLBACK: REGEX ON PAGE TEXT ====================
 
-    # Title
+    # Title - multiple strategies
     if not job["title"]:
         lines = [l.strip() for l in page_text.split('\n') if l.strip()]
-        for line in lines[:10]:
-            if 'Manager' in line or 'Executive' in line or 'Officer' in line:
-                if 'JR00' not in line and len(line) < 100:
+        for line in lines[:15]:
+            # Look for job title patterns
+            if any(kw in line for kw in ['Manager', 'Executive', 'Officer', 'Engineer', 'Analyst', 'Specialist', 'Associate', 'Lead', 'Head', 'Director']):
+                if 'JR00' not in line and len(line) > 10 and len(line) < 120:
+                    if not any(skip in line for skip in ['Sign In', 'Register', 'Posted', 'End Date', 'Apply', 'Share']):
+                        job["title"] = line
+                        break
+
+    # If still no title, try getting first substantial line
+    if not job["title"]:
+        lines = [l.strip() for l in page_text.split('\n') if l.strip()]
+        for line in lines[:20]:
+            if len(line) > 15 and len(line) < 100:
+                if not any(skip in line for skip in ['Sign In', 'Register', 'Posted', 'End Date', 'Apply', 'Share', 'JR00', 'All Jobs', 'Filter']):
                     job["title"] = line
                     break
 
-    # Department - look for pattern like "GL North West | Bhopal"
+    # Department - look for pattern like "GL North West | Bhopal" or "MFI South | Location"
     if not job["department"]:
-        dept_match = re.search(r'^([A-Z][A-Za-z\s]+?)\s*\|\s*[A-Za-z]', page_text, re.M)
-        if dept_match:
-            job["department"] = dept_match.group(1).strip()
+        # Common BFL department patterns
+        dept_patterns = [
+            r'(MFI\s+(?:South|North|East|West))',
+            r'(GL\s+(?:North|South|East|West)(?:\s+West)?)',
+            r'(Rural\s+Finance)',
+            r'(Urban\s+Finance)',
+            r'(Consumer\s+Finance)',
+            r'(Business\s+Loans?)',
+        ]
+        for pattern in dept_patterns:
+            match = re.search(pattern, page_text, re.I)
+            if match:
+                job["department"] = match.group(1).strip()
+                break
 
     # Location fields from text
     if not job["country"]:
