@@ -559,12 +559,131 @@ def validate_job_data(job):
 
     # Other fields (30 points)
     if job.get("experience"): score += 5
-    if job.get("skills") and job["skills"] != "AS PER JD": score += 10
+    if job.get("skills") and len(job["skills"]) > 5: score += 10
     if job.get("department"): score += 5
     if job.get("posted_date"): score += 5
     if job.get("job_purpose") or job.get("responsibilities"): score += 5
 
     return score
+
+
+def clean_job_data(job):
+    """
+    AGENTIC DATA CLEANING - Intelligently clean garbage from extracted data.
+    This makes the scraper smart about what's valid vs garbage.
+    """
+
+    # ===== GARBAGE PATTERNS TO DETECT =====
+    garbage_patterns = [
+        "SKILLS AS PER JD",
+        "Skills as per JD",
+        "AS PER JD",
+        "SKILL\n",
+        "Skills as per",
+        "Minimum Qualification",
+        "JOB DESCRIPTION",
+        "expand_less",
+        "expand_more",
+        "©",
+    ]
+
+    # ===== CLEAN SKILLS FIELD =====
+    if job.get("skills"):
+        skills = job["skills"]
+        # Check if skills contains garbage
+        skills_upper = skills.upper()
+        is_garbage = any(g.upper() in skills_upper for g in garbage_patterns)
+        is_too_short = len(skills.strip()) < 5
+        is_just_skill = skills.strip().upper() in ["SKILL", "SKILLS"]
+
+        if is_garbage or is_too_short or is_just_skill:
+            job["skills"] = ""  # Clear garbage
+
+    # ===== CLEAN TEXT FIELDS - Remove encoding artifacts =====
+    text_fields = ["job_purpose", "responsibilities", "qualifications", "title"]
+
+    encoding_replacements = {
+        "â€¢": "•",      # Bullet point
+        "â€"": "–",      # En dash
+        "â€"": "—",      # Em dash
+        "â€™": "'",      # Right single quote
+        "â€œ": '"',      # Left double quote
+        "â€": '"',       # Right double quote
+        "â€ƒ": " ",      # Em space
+        "Ã¢â‚¬â€œ": "-",  # Another dash variant
+        "Ð¥": "•",      # Cyrillic X used as bullet
+        "ï‚§": "•",      # Another bullet variant
+        "\n\n\n": "\n\n",  # Excessive newlines
+    }
+
+    for field in text_fields:
+        if job.get(field):
+            text = job[field]
+            # Apply encoding fixes
+            for bad, good in encoding_replacements.items():
+                text = text.replace(bad, good)
+            # Remove excessive whitespace
+            text = " ".join(text.split())
+            job[field] = text.strip()
+
+    # ===== CLEAN QUALIFICATIONS - Remove "and Experience" prefix =====
+    if job.get("qualifications"):
+        qual = job["qualifications"]
+        # Remove common garbage prefixes
+        garbage_prefixes = ["and Experience", "and Experience\n", ":"]
+        for prefix in garbage_prefixes:
+            if qual.startswith(prefix):
+                qual = qual[len(prefix):].strip()
+        job["qualifications"] = qual
+
+    # ===== VALIDATE TITLE - Should look like a job title =====
+    if job.get("title"):
+        title = job["title"]
+        # If title is too long (extracted too much), truncate at first comma or newline
+        if len(title) > 100:
+            # Take first meaningful part
+            parts = title.split(",")
+            if len(parts) > 1:
+                job["title"] = parts[0].strip()
+
+    # ===== VALIDATE TIER - Should be "Tier X" format =====
+    if job.get("tier"):
+        tier = job["tier"]
+        # If just a number, add "Tier" prefix
+        if tier.isdigit():
+            job["tier"] = f"Tier {tier}"
+        # If doesn't start with "Tier", try to fix
+        elif not tier.lower().startswith("tier"):
+            tier_match = re.search(r'(\d+)', tier)
+            if tier_match:
+                job["tier"] = f"Tier {tier_match.group(1)}"
+
+    # ===== VALIDATE MIN_QUALIFICATION - Clean up =====
+    if job.get("min_qualification"):
+        qual = job["min_qualification"]
+        # Remove "Others" if it's just that
+        if qual.strip().upper() == "OTHERS":
+            job["min_qualification"] = "Others"
+
+    # ===== SMART DEPARTMENT EXTRACTION FROM TITLE =====
+    if not job.get("department") and job.get("title"):
+        title = job["title"]
+        # Try to extract department from title
+        dept_patterns = [
+            (r'MFI\s+(South|North|East|West)', r'MFI \1'),
+            (r'GL\s+(North|South|East|West)(?:\s+West)?', r'GL \1'),
+            (r'Business\s+Loans?', 'Business Loans'),
+            (r'Consumer\s+Durable', 'Consumer Durable'),
+            (r'Tractor\s+Finance', 'Tractor Finance'),
+            (r'Debt\s+Management', 'Debt Management'),
+        ]
+        for pattern, replacement in dept_patterns:
+            match = re.search(pattern, title, re.I)
+            if match:
+                job["department"] = re.sub(pattern, replacement, match.group(0), flags=re.I)
+                break
+
+    return job
 
 
 def go_to_page(driver, page_num):
@@ -758,6 +877,9 @@ def main():
                     # Extract all data
                     job = extract_detail_page_complete(driver, jr_code)
 
+                    # AGENTIC: Clean garbage data intelligently
+                    job = clean_job_data(job)
+
                     # Validate quality
                     score = validate_job_data(job)
 
@@ -765,6 +887,7 @@ def main():
                     if score < 40:
                         time.sleep(1)
                         job = extract_detail_page_complete(driver, jr_code)
+                        job = clean_job_data(job)  # Clean again after retry
                         score = validate_job_data(job)
 
                     all_jobs.append(job)
