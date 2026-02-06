@@ -217,13 +217,53 @@ python main.py generate --input bfl_output/bfl_jobs_complete.csv
 
 ---
 
+## DETAIL PAGE STRUCTURE (v6 extraction targets)
+
+The detail page (`/job/detail/JR00XXXXXX`) has these sections:
+
+```
+HEADER:
+- Title, JR Code
+- Department | Location (e.g., "GL North West | Bhopal - Kolar Road")
+- Posted On, End Date, Required Experience
+
+BASIC SECTION:
+- Job Level: GB03
+- Job Title: Full title with department
+
+JOB LOCATION:
+- Country: India
+- State: MADHYA PRADESH
+- Region: West
+- City: Bhopal
+- Location Name: Bhopal - Kolar Road
+- Tier: Tier 2
+
+SKILLS:
+- List of skill tags (SALES, CASH MANAGEMENT, KYC, etc.)
+
+MINIMUM QUALIFICATION:
+- OTHERS, Graduate, etc.
+
+JOB DESCRIPTION:
+- Job Purpose
+- Duties and Responsibilities
+- Required Qualifications and Experience
+```
+
+**Key insight**: The card view shows "Country" as a label, not as location data!
+Extract City, State, Location Name from the LABELED fields on detail page.
+
+---
+
 ## NEXT STEPS / TODO
 
-- [ ] Create v6 "agentic" scraper with multi-strategy extraction
-- [ ] Add progress checkpointing for resume capability
-- [ ] Add data quality scoring
+- [x] Create v6 "agentic" scraper with multi-strategy extraction
+- [x] Add progress checkpointing for resume capability
+- [x] Add data quality scoring
 - [ ] Implement parallel extraction (multiple browser tabs)
 - [ ] Add WhatsApp image generation from real scraped data
+- [ ] Add location-based filtering to scraper
 
 ---
 
@@ -234,6 +274,8 @@ python main.py generate --input bfl_output/bfl_jobs_complete.csv
 | 2026-02-06 | Created CLAUDE.md with lessons from v1-v5 scrapers |
 | 2026-02-06 | Documented stale element fix (v5) |
 | 2026-02-06 | Added agentic scraper principles |
+| 2026-02-07 | Created v6 agentic scraper with full detail page extraction |
+| 2026-02-07 | Documented detail page structure (City, State, Location Name fields) |
 
 ---
 
