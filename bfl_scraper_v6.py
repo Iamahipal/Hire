@@ -358,46 +358,34 @@ def extract_detail_page_complete(driver, jr_code):
 
     // Minimum Qualification
     data.min_qualification = getFieldValue('Minimum Qualification');
-    if (!data.min_qualification) {
-        var qualMatch = document.body.innerText.match(/Minimum Qualification[\\s\\S]*?([A-Z][A-Za-z\\s]+?)(?=\\n|Skills|JOB)/i);
-        if (qualMatch) data.min_qualification = qualMatch[1].trim();
-    }
 
     // Experience from header or field
-    var expMatch = document.body.innerText.match(/Required Experience[\\s\\S]*?(\\d+\\s*[-–]\\s*\\d+\\s*[Yy]ears?)/);
+    var expMatch = bodyText.match(/Required Experience[\\s\\S]*?(\\d+\\s*[-–]\\s*\\d+\\s*[Yy]ears?)/);
     if (expMatch) data.experience = expMatch[1];
     if (!data.experience) {
-        expMatch = document.body.innerText.match(/(\\d+\\s*[-–]\\s*\\d+\\s*[Yy]ears?)/);
+        expMatch = bodyText.match(/(\\d+\\s*[-–]\\s*\\d+\\s*[Yy]ears?)/);
         if (expMatch) data.experience = expMatch[1];
     }
 
     // Dates
-    var postedMatch = document.body.innerText.match(/Posted\\s*On[:\\s]*(\\d{1,2}\\s+\\w+\\s+\\d{4}|\\d{2}-\\w{3}-\\d{2,4})/i);
+    var postedMatch = bodyText.match(/Posted\\s*On[:\\s]*(\\d{1,2}[\\s-]\\w{3}[\\s-]\\d{2,4})/i);
     if (postedMatch) data.posted_date = postedMatch[1];
 
-    var endMatch = document.body.innerText.match(/End\\s*Date[:\\s]*(\\d{1,2}\\s+\\w+\\s+\\d{4}|\\d{2}-\\w{3}-\\d{2,4})/i);
+    var endMatch = bodyText.match(/End\\s*Date[:\\s]*(\\d{1,2}[\\s-]\\w{3}[\\s-]\\d{2,4})/i);
     if (endMatch) data.end_date = endMatch[1];
 
     // JOB DESCRIPTION sections
-    var jdSection = document.body.innerText;
-
     // Job Purpose
-    var purposeMatch = jdSection.match(/Job\\s*Purpose[\\s\\S]*?([\\s\\S]{10,500}?)(?=Duties|Responsibilities|Required|$)/i);
+    var purposeMatch = bodyText.match(/Job\\s*Purpose([\\s\\S]{10,800}?)(?=Duties|Responsibilities|Required|Minimum|$)/i);
     if (purposeMatch) data.job_purpose = purposeMatch[1].trim().substring(0, 500);
 
     // Responsibilities
-    var respMatch = jdSection.match(/(?:Duties and Responsibilities|Responsibilities)[\\s\\S]*?([\\s\\S]{10,1000}?)(?=Required|Qualifications|$)/i);
+    var respMatch = bodyText.match(/(?:Duties and Responsibilities|Responsibilities)([\\s\\S]{10,1500}?)(?=Required Qualifications|Minimum|Education|$)/i);
     if (respMatch) data.responsibilities = respMatch[1].trim().substring(0, 1000);
 
     // Required Qualifications
-    var qualReqMatch = jdSection.match(/Required Qualifications[\\s\\S]*?([\\s\\S]{10,500}?)(?=©|$)/i);
+    var qualReqMatch = bodyText.match(/(?:Required Qualifications|Education \\& Skill)([\\s\\S]{10,800}?)(?=©|expand_less|$)/i);
     if (qualReqMatch) data.qualifications = qualReqMatch[1].trim().substring(0, 500);
-
-    // Department from header (format: "Department | Location")
-    var deptLocMatch = document.body.innerText.match(/^([A-Za-z\\s]+)\\s*\\|\\s*([A-Za-z\\s\\-]+)$/m);
-    if (deptLocMatch) {
-        data.department = deptLocMatch[1].trim();
-    }
 
     return data;
     """
@@ -412,6 +400,18 @@ def extract_detail_page_complete(driver, jr_code):
         print(f"    JS extraction error: {e}")
 
     # ==================== FALLBACK: REGEX ON PAGE TEXT ====================
+
+    # Job Level fallback
+    if not job["job_level"]:
+        level_match = re.search(r'Job Level\s*[:\s]*([A-Z]{2}\d{2})', page_text)
+        if level_match:
+            job["job_level"] = level_match.group(1)
+
+    # Region fallback
+    if not job["region"]:
+        region_match = re.search(r'Region\s*[:\s]*(South|North|East|West|Central)', page_text, re.I)
+        if region_match:
+            job["region"] = region_match.group(1).capitalize()
 
     # Title - multiple strategies
     if not job["title"]:
@@ -449,6 +449,40 @@ def extract_detail_page_complete(driver, jr_code):
             if match:
                 job["department"] = match.group(1).strip()
                 break
+
+    # Skills fallback - extract from Skills section
+    if not job["skills"] or "SKILLS AS PER JD" in job["skills"].upper():
+        skills_section = re.search(r'Skills\s*([\s\S]*?)(?:Minimum Qualification|JOB DESCRIPTION)', page_text, re.I)
+        if skills_section:
+            skill_text = skills_section.group(1)
+            # Look for skill patterns with star markers
+            skills = re.findall(r'[★•]\s*([A-Z][A-Z\s&]+)', skill_text)
+            if skills:
+                clean_skills = [s.strip() for s in skills if len(s.strip()) > 2 and s.strip().upper() != 'SKILL']
+                if clean_skills:
+                    job["skills"] = ", ".join(clean_skills[:15])
+
+    # If skills still has garbage, clear it
+    if job.get("skills") and ("SKILLS AS PER JD" in job["skills"].upper() or job["skills"].upper() == "SKILL"):
+        job["skills"] = ""
+
+    # Job purpose fallback
+    if not job["job_purpose"]:
+        purpose_match = re.search(r'Job\s*Purpose\s*([\s\S]{10,500}?)(?=Duties|Responsibilities|Required|$)', page_text, re.I)
+        if purpose_match:
+            job["job_purpose"] = purpose_match.group(1).strip()[:500]
+
+    # Responsibilities fallback
+    if not job["responsibilities"]:
+        resp_match = re.search(r'(?:Duties and Responsibilities|Responsibilities)\s*([\s\S]{10,1000}?)(?=Required|Qualifications|Education|$)', page_text, re.I)
+        if resp_match:
+            job["responsibilities"] = resp_match.group(1).strip()[:1000]
+
+    # Qualifications fallback
+    if not job["qualifications"]:
+        qual_match = re.search(r'(?:Required Qualifications|Education & Skill|and Experience)\s*([\s\S]{10,500}?)(?=©|expand_less|$)', page_text, re.I)
+        if qual_match:
+            job["qualifications"] = qual_match.group(1).strip()[:500]
 
     # Location fields from text
     if not job["country"]:
